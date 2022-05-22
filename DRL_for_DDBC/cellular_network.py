@@ -79,14 +79,21 @@ class CellularNetwork:
         for bs in self.bs_list:
             for eva in self.evalist:
                 self.illegal_channels.append(illegalChannel(bs,eva))
-        self._get_links_()
+        self._get_illegal_links()
         
     def _get_links_(self):
-        """ get the link set """
+        """ get the legal link set """
         self.links = []
         for channel in self.channels:
             if channel.is_link:
                 self.links.append(channel)
+    
+    def _get_illegal_links(self):
+        """ get the illegal link set """
+        self.illegal_links = []
+        for illegal_channel in self.illegal_channels:
+            if illegal_channel.islink:
+                self.illegal_links.append(illegal_channel)
 
     def get_channel_list(self, bs_index=None, ue_index=None):
         """ 对于系统中的每一对基站和用户，从一堆信道中选择直接连接的，排除非直接连接的信道 """
@@ -106,13 +113,38 @@ class CellularNetwork:
                     return channel
 
         return channel_list
+    
+    def get_illegal_channel_list(self, bs_index=None, eva_index=None):
+        """ 对于窃听者而言，找到它想窃听的那个基站的信道 """
+        channel_list = []
+
+        if bs_index is not None and eva_index is None:
+            for channel in self.channels:
+                if bs_index == channel.bs.index:
+                    channel_list.append(channel)
+        elif bs_index is None and eva_index is not None:
+            for channel in self.channels:
+                if eva_index == channel.eva.index:
+                    channel_list.append(channel)
+        elif bs_index is not None and eva_index is not None:
+            for channel in self.channels:
+                if bs_index == channel.bs.index and eva_index == channel.eva.index:
+                    return channel
+
+        return channel_list
 
     def get_link(self, link_index):
         """ Search for the direct link that meets the given conditions """
         for link in self.links:
             if link.ue.index == link_index:
                 return link
-
+    
+    def get_illegal_link(self, link_index):
+        """ Search for the direct link that meets the given conditions """
+        for link in self.illegal_links:
+            if link.eva.index == link_index:
+                return link
+                    
     def get_link_interferers(self, link):
         """ get the set of all the interferers """
         interferers = []
@@ -154,9 +186,9 @@ class CellularNetwork:
             for interferer in interferers:
                 IN += interferer.r_power
 
-            link.IN = IN
-            link.SINR = link.r_power / link.IN
-            link.utility = np.log2(1 + link.SINR) 
+            link.IN = IN #噪声功率
+            link.SINR = link.r_power / link.IN #信噪比
+            link.utility = np.log2(1 + link.SINR) #信道容量
             link.interferer_neighbors = self.get_interferer_neighbors(link)
             link.interfered_neighbors = self.get_interfered_neighbors(link)
 
@@ -168,14 +200,14 @@ class CellularNetwork:
                 channel.update(ir_change)
         else:
             if actions is not None:
-                self._take_actions_(actions=actions)
+                self._take_actions_(actions=actions) #采取新的动作
             if weights is not None:
-                self._take_actions_(weights=weights)
+                self._take_actions_(weights=weights) #更新网络参数
             for channel in self.channels:
                 channel.update(ir_change)
         self._evaluate_link_performance_()
 
-    def random_choose_actions(self): # 用于随机选择算法
+    def random_choose_actions(self): # 在采取新动作时，随机选择新动作
         """ random take actions"""
         actions = []
         for _ in range(self.config.n_links):
@@ -183,7 +215,7 @@ class CellularNetwork:
         return np.array(actions)
 
     def _take_actions_(self, actions=None, weights=None):
-        """ BSs take the given actions"""
+        """ 基站采取新的动作并更新网络参数 """
         if actions is not None:
             for index in range(actions.shape[0]):
                 self.bs_list[index].take_action(action=actions[index])
@@ -192,14 +224,14 @@ class CellularNetwork:
                 self.bs_list[index].take_action(weight=weights[:, index])
 
     def _reset_(self):
-        """ reset the cellular network to guarantee the channel variations are the same in different schemes"""
+        """ 对蜂窝网络进行复位，以保证不同方案中的信道变化相同  """
         for _ in range(10):
             actions = self.random_choose_actions()
             self.update(ir_change=False, actions=actions)
             self.update(ir_change=True)
 
     def observe(self):
-        """ obtain the states of the BSs"""
+        """ 获取基站的状态"""
         # normalization factors for the elements in states
         n_r_power = 1e-9
         n_gain = 1e-9
@@ -257,13 +289,13 @@ class CellularNetwork:
         return np.array(rewards)
 
     def save_transitions(self, s, a, r, s_):
-        """ save the experience of each BS"""
+        """ 对于每个基站，往经验池里存数据 """
         for bs in self.bs_list:
             i = bs.index
             bs.dqn.save_transition(s[i, :], a[i], r[i], s_[i, :])
 
     def train_dqns(self):
-        """ train the DQN of each BS"""
+        """ dqn训练过程的入口，针对每个基站进行 """
         for bs in self.bs_list:
             bs.dqn.learn()
 
@@ -298,12 +330,16 @@ class CellularNetwork:
         plt.show()
 
     def get_ave_utility(self):
-        """ calculate the average throughput of all the direct links"""
+        """ 计算整个网络中的SREE值 """
         s = 0
+        p = 0
         for link in self.links:
             s += link.utility
-
-        return s / self.config.n_links
+            p += link.bs.power
+        for link in self.illegal_links:
+            s-= link.utility
+            
+        return s / p
 
     def get_all_rates(self):
         rates = []
